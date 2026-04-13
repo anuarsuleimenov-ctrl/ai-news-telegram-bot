@@ -1,7 +1,7 @@
 """
 AI News Daily Bot
 """
-import requests, schedule, time, datetime, json, sys, os
+import requests, schedule, time, datetime, json, sys, os, html
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -19,6 +19,9 @@ def send_telegram_message(text):
         print(f"Error: {e}")
         return False
 
+def escape_html(text):
+    return html.escape(str(text)) if text else ""
+
 def fetch_news():
     import xml.etree.ElementTree as ET
     queries = ["artificial+intelligence+news", "AI+technology+2026", "machine+learning+breakthrough"]
@@ -27,31 +30,43 @@ def fetch_news():
         try:
             r = requests.get(f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en", timeout=15)
             if r.status_code == 200:
-                for item in ET.fromstring(r.content).findall(".//item"):
-                    t, l, s = item.find("title"), item.find("link"), item.find("source")
-                    if t is not None and l is not None:
-                        articles.append({"title": t.text or "", "url": l.text or "", "source": s.text if s is not None else ""})
-        except: pass
-    seen, unique = set(), []
+                root = ET.fromstring(r.content)
+                for item in root.findall(".//item"):
+                    title = item.find("title")
+                    link = item.find("link")
+                    source = item.find("source")
+                    if title is not None and link is not None:
+                        articles.append({"title": title.text or "", "url": link.text or "", "source": source.text if source is not None else ""})
+        except Exception as e:
+            print(f"RSS error: {e}")
+    seen = set()
+    unique = []
     for a in articles:
-        if a["title"] not in seen: seen.add(a["title"]); unique.append(a)
+        if a["title"] not in seen:
+            seen.add(a["title"])
+            unique.append(a)
     return unique[:10]
 
 def send_daily_digest():
+    print(f"\n[{datetime.datetime.now()}] Fetching news...")
     articles = fetch_news()
-    if not articles: return send_telegram_message("No news today")
+    if not articles:
+        send_telegram_message("No news found today.")
+        return
     today = datetime.date.today().strftime("%d.%m.%Y")
-    msg = f"<b>AI & Tech Daily Digest</b>\n<i>{today}</i>\n" + "=" * 30 + "\n\n"
+    msg = f"<b>AI & Tech Daily Digest</b>\n<i>{today}</i>\n{'=' * 30}\n\n"
     for i, a in enumerate(articles, 1):
-        src = f" ({a['source']})" if a.get("source") else ""
-        msg += f'{i}. <a href="{a["url"]}">{a["title"]}</a>{src}\n\n'
-    msg += "<i>AI News Bot</i>"
-    if len(msg) > 4096: msg = msg[:4090] + "..."
+        safe_title = escape_html(a["title"])
+        source = f" ({escape_html(a['source'])})" if a.get("source") else ""
+        msg += f'{i}. <a href=\"{a["url"]}\">{safe_title}</a>{source}\n\n'
+    msg += "\n<i>AI News Bot</i>"
+    if len(msg) > 4096:
+        msg = msg[:4090] + "..."
     send_telegram_message(msg)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "test":
-        send_telegram_message("<b>AI News Bot connected!</b>")
+        send_telegram_message("<b>AI News Bot connected!</b>\nBot is ready.")
     elif len(sys.argv) > 1 and sys.argv[1] == "once":
         send_daily_digest()
     else:
