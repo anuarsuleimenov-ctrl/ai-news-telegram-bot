@@ -76,7 +76,6 @@ def send_telegram_message(text, use_html=True):
             return True
         else:
             print(f"[{datetime.datetime.now()}] Error: {r.text}")
-            # Fallback: strip HTML and send as plain text
             if use_html:
                 print("Falling back to plain text...")
                 clean = re.sub(r'<[^>]+>', '', text)
@@ -85,6 +84,56 @@ def send_telegram_message(text, use_html=True):
     except Exception as e:
         print(f"Send error: {e}")
         return False
+
+
+HISTORY_FILE = "sent_news_history.json"
+HISTORY_DAYS = 7
+
+
+def load_history():
+    """Load previously sent news titles (last 7 days)"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"History load error: {e}")
+    return {}
+
+
+def save_history(history):
+    """Save sent news history to disk"""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"History save error: {e}")
+
+
+def clean_old_history(history):
+    """Remove entries older than HISTORY_DAYS days"""
+    cutoff = (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
+    return {k: v for k, v in history.items() if v >= cutoff}
+
+
+def normalize_title(title):
+    """Normalize title for duplicate comparison"""
+    return re.sub(r"[^a-zA-Za-zа-яёА-ЯЁ0-9]", "", title.lower())
+
+
+def is_duplicate(article, history):
+    """Check if article title was already sent in the past 7 days"""
+    norm = normalize_title(article["title"])
+    return norm in history
+
+
+def update_history(history, articles):
+    """Add new articles to history with today's date"""
+    today = datetime.date.today().isoformat()
+    for a in articles:
+        norm = normalize_title(a["title"])
+        history[norm] = today
+    return history
 
 
 def fetch_news():
@@ -115,13 +164,22 @@ def fetch_news():
         except Exception as e:
             print(f"RSS error: {e}")
 
+    # Deduplicate within current fetch
     seen = set()
     unique = []
     for a in articles:
         if a["title"] not in seen:
             seen.add(a["title"])
             unique.append(a)
-    return unique[:10]
+
+    # Filter against 7-day history
+    history = clean_old_history(load_history())
+    fresh = [a for a in unique if not is_duplicate(a, history)]
+    skipped = len(unique) - len(fresh)
+    if skipped > 0:
+        print(f"Skipped {skipped} duplicate(s) from past {HISTORY_DAYS} days")
+
+    return fresh[:10]
 
 
 def rewrite_with_claude(articles):
@@ -170,10 +228,8 @@ def inject_links_html(rewritten_text, articles):
             result.append("━" * 15)
             result.append("")
         else:
-            # Escape HTML in Claude's text to prevent parse errors
             result.append(escape_html(line))
 
-    # Add remaining links if Claude didn't add enough [LINK]
     while article_idx < len(articles):
         url = articles[article_idx]["url"]
         result.append(f'<a href="{url}">подробнее здесь</a>')
@@ -189,14 +245,11 @@ def split_message_by_separator(full_msg, separator="━" * 15, max_len=4096):
 
     parts = []
     current = ""
-    # Split by the separator line
     blocks = full_msg.split(separator)
 
     for i, block in enumerate(blocks):
-        # Add separator back (except before first block)
         candidate = current + (separator if current and i > 0 else "") + block
         if len(candidate) > max_len and current:
-            # Current part is full, save it
             parts.append(current.strip())
             current = block
         else:
@@ -225,7 +278,6 @@ def send_daily_digest():
         body = inject_links_html(rewritten, articles)
         msg = header + body + footer
     else:
-        # Fallback without Claude
         lines = []
         emojis = ["\U0001F525", "\u26A1", "\U0001F680", "\U0001F916", "\U0001F4A1",
                   "\U0001F9E0", "\U0001F4CA", "\U0001F52C", "\U0001F4BB", "\U0001F310"]
@@ -236,13 +288,18 @@ def send_daily_digest():
             lines.append(f'{emoji} {safe_title}{source}\n<a href="{a["url"]}">подробнее здесь</a>')
         msg = header + "\n\n".join(lines) + footer
 
-    # Split into multiple messages if too long
     parts = split_message_by_separator(msg)
     print(f"Sending {len(parts)} message(s)...")
     for i, part in enumerate(parts):
         if i > 0:
-            time.sleep(1)  # Small delay between messages
+            time.sleep(1)
         send_telegram_message(part)
+
+    # Save articles to history to avoid repeats next 7 days
+    history = clean_old_history(load_history())
+    history = update_history(history, articles)
+    save_history(history)
+    print(f"History updated: {len(history)} titles stored")
 
 
 if __name__ == "__main__":
