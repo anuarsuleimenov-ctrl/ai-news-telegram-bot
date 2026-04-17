@@ -1,6 +1,7 @@
 """
-AI News Daily Bot — Ежедневный дайджест AI новостей
-Использует Claude API + Voice DNA Anuar для переписывания новостей
+AI News Daily Bot â ÐÐ¶ÐµÐ´Ð½ÐµÐ²Ð½ÑÐ¹ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑ AI Ð½Ð¾Ð²Ð¾ÑÑÐµÐ¹
+ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÑ Claude API + Ð°Ð½Ð°Ð»Ð¸ÑÐ¸ÑÐµÑÐºÐ¸Ð¹ ÑÑÐ¸Ð»Ñ Ð´Ð»Ñ Ð¿ÐµÑÐµÐ¿Ð¸ÑÑÐ²Ð°Ð½Ð¸Ñ Ð½Ð¾Ð²Ð¾ÑÑÐµÐ¹
+08:00 Ð¸ 16:00 Ð¿Ð¾ ÐÑÑÐ°Ð½Ðµ (03:00 Ð¸ 11:00 UTC)
 """
 import requests, schedule, time, datetime, sys, os, re, json, html
 import xml.etree.ElementTree as ET
@@ -8,49 +9,62 @@ from anthropic import Anthropic
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SEND_HOUR = os.environ.get("SEND_HOUR", "03:00")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-SYSTEM_PROMPT = """Ты — AI-аналитик и редактор Telegram-канала про AI и технологии.
-Пишешь в стиле Николая Хлебинского: экспертно, с личным мнением, без воды.
+# Astana = UTC+5
+# 08:00 Astana = 03:00 UTC
+# 16:00 Astana = 11:00 UTC
+# 19:00 Astana = 14:00 UTC
+SEND_HOUR_MORNING = os.environ.get("SEND_HOUR_MORNING", "03:00")
+SEND_HOUR_EVENING = os.environ.get("SEND_HOUR_EVENING", "11:00")
+SEND_HOUR_NIGHT   = os.environ.get("SEND_HOUR_NIGHT",   "14:00")
 
-СТИЛЬ И ТОН:
-- Пишешь как эксперт, который разбирается в теме. Уверенно, от первого лица.
-- Тон: аналитический, прямой, с характером. Не боишься высказать мнение.
-- Без эмодзи в тексте. Только жирный заголовок и чистый текст.
-- Конкретика: цифры, имена, суммы, проценты. Абстракции = мусор.
-- Короткие абзацы. Одна мысль = один абзац.
-- Можешь задать риторический вопрос, бросить провокацию.
-- Бизнес-угол: как это влияет на рынок, деньги, стратегию.
-- Если уместно — упомяни контекст для Казахстана/СНГ (Kaspi, Astana Hub, местные реалии).
+NEWS_PER_SLOT = {
+    "morning": 4,
+    "evening": 4,
+    "night":   2,
+}
 
-ЗАПРЕЩЕНО:
-- Пафос ("в эпоху перемен", "революционный прорыв", "уникальная возможность")
-- Вода и канцелярит ("в рамках реализации", "данный продукт")
-- Эмодзи (совсем — ни в заголовках, ни в тексте)
-- Восторженность ("Это невероятно!", "Вау!")
-- HTML теги. Только чистый текст.
-- Выдумывать факты или додумывать то, чего нет в новости.
+SYSTEM_PROMPT = """Ð¢Ñ â AI-Ð°Ð½Ð°Ð»Ð¸ÑÐ¸Ðº Ð¸ ÑÐµÐ´Ð°ÐºÑÐ¾Ñ Telegram-ÐºÐ°Ð½Ð°Ð»Ð° Ð¿ÑÐ¾ AI Ð¸ ÑÐµÑÐ½Ð¾Ð»Ð¾Ð³Ð¸Ð¸.
+ÐÐ¸ÑÐµÑÑ Ð² ÑÑÐ¸Ð»Ðµ ÐÐ¸ÐºÐ¾Ð»Ð°Ñ Ð¥Ð»ÐµÐ±Ð¸Ð½ÑÐºÐ¾Ð³Ð¾: ÑÐºÑÐ¿ÐµÑÑÐ½Ð¾, Ñ Ð»Ð¸ÑÐ½ÑÐ¼ Ð¼Ð½ÐµÐ½Ð¸ÐµÐ¼, Ð±ÐµÐ· Ð²Ð¾Ð´Ñ.
 
-ФОРМАТ для КАЖДОЙ новости:
+Ð¡Ð¢ÐÐÐ¬ Ð Ð¢ÐÐ:
+- ÐÐ¸ÑÐµÑÑ ÐºÐ°Ðº ÑÐºÑÐ¿ÐµÑÑ, ÐºÐ¾ÑÐ¾ÑÑÐ¹ ÑÐ°Ð·Ð±Ð¸ÑÐ°ÐµÑÑÑ Ð² ÑÐµÐ¼Ðµ. Ð£Ð²ÐµÑÐµÐ½Ð½Ð¾, Ð¾Ñ Ð¿ÐµÑÐ²Ð¾Ð³Ð¾ Ð»Ð¸ÑÐ°.
+- Ð¢Ð¾Ð½: Ð°Ð½Ð°Ð»Ð¸ÑÐ¸ÑÐµÑÐºÐ¸Ð¹, Ð¿ÑÑÐ¼Ð¾Ð¹, Ñ ÑÐ°ÑÐ°ÐºÑÐµÑÐ¾Ð¼. ÐÐµ Ð±Ð¾Ð¸ÑÑÑÑ Ð²ÑÑÐºÐ°Ð·Ð°ÑÑ Ð¼Ð½ÐµÐ½Ð¸Ðµ.
+- ÐÐµÐ· ÑÐ¼Ð¾Ð´Ð·Ð¸ Ð² ÑÐµÐºÑÑÐµ. Ð¢Ð¾Ð»ÑÐºÐ¾ Ð¶Ð¸ÑÐ½ÑÐ¹ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº Ð¸ ÑÐ¸ÑÑÑÐ¹ ÑÐµÐºÑÑ.
+- ÐÐ¾Ð½ÐºÑÐµÑÐ¸ÐºÐ°: ÑÐ¸ÑÑÑ, Ð¸Ð¼ÐµÐ½Ð°, ÑÑÐ¼Ð¼Ñ, Ð¿ÑÐ¾ÑÐµÐ½ÑÑ. ÐÐ±ÑÑÑÐ°ÐºÑÐ¸Ð¸ = Ð¼ÑÑÐ¾Ñ.
+- ÐÐ¾ÑÐ¾ÑÐºÐ¸Ðµ Ð°Ð±Ð·Ð°ÑÑ. ÐÐ´Ð½Ð° Ð¼ÑÑÐ»Ñ = Ð¾Ð´Ð¸Ð½ Ð°Ð±Ð·Ð°Ñ.
+- ÐÐ¾Ð¶ÐµÑÑ Ð·Ð°Ð´Ð°ÑÑ ÑÐ¸ÑÐ¾ÑÐ¸ÑÐµÑÐºÐ¸Ð¹ Ð²Ð¾Ð¿ÑÐ¾Ñ, Ð±ÑÐ¾ÑÐ¸ÑÑ Ð¿ÑÐ¾Ð²Ð¾ÐºÐ°ÑÐ¸Ñ.
+- ÐÐ¸Ð·Ð½ÐµÑ-ÑÐ³Ð¾Ð»: ÐºÐ°Ðº ÑÑÐ¾ Ð²Ð»Ð¸ÑÐµÑ Ð½Ð° ÑÑÐ½Ð¾Ðº, Ð´ÐµÐ½ÑÐ³Ð¸, ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ.
+- ÐÑÐ»Ð¸ ÑÐ¼ÐµÑÑÐ½Ð¾ â ÑÐ¿Ð¾Ð¼ÑÐ½Ð¸ ÐºÐ¾Ð½ÑÐµÐºÑÑ Ð´Ð»Ñ ÐÐ°Ð·Ð°ÑÑÑÐ°Ð½Ð°/Ð¡ÐÐ (Kaspi, Astana Hub, Ð¼ÐµÑÑÐ½ÑÐµ ÑÐµÐ°Ð»Ð¸Ð¸).
 
-{Жирный заголовок — переосмысленный, цепляющий, без эмодзи}
+ÐÐÐÐ ÐÐ©ÐÐÐ:
+- ÐÐ°ÑÐ¾Ñ ("Ð² ÑÐ¿Ð¾ÑÑ Ð¿ÐµÑÐµÐ¼ÐµÐ½", "ÑÐµÐ²Ð¾Ð»ÑÑÐ¸Ð¾Ð½Ð½ÑÐ¹ Ð¿ÑÐ¾ÑÑÐ²", "ÑÐ½Ð¸ÐºÐ°Ð»ÑÐ½Ð°Ñ Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÑ")
+- ÐÐ¾Ð´Ð° Ð¸ ÐºÐ°Ð½ÑÐµÐ»ÑÑÐ¸Ñ ("Ð² ÑÐ°Ð¼ÐºÐ°Ñ ÑÐµÐ°Ð»Ð¸Ð·Ð°ÑÐ¸Ð¸", "Ð´Ð°Ð½Ð½ÑÐ¹ Ð¿ÑÐ¾Ð´ÑÐºÑ")
+- Ð­Ð¼Ð¾Ð´Ð·Ð¸ (ÑÐ¾Ð²ÑÐµÐ¼ â Ð½Ð¸ Ð² Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²ÐºÐ°Ñ, Ð½Ð¸ Ð² ÑÐµÐºÑÑÐµ)
+- ÐÐ¾ÑÑÐ¾ÑÐ¶ÐµÐ½Ð½Ð¾ÑÑÑ ("Ð­ÑÐ¾ Ð½ÐµÐ²ÐµÑÐ¾ÑÑÐ½Ð¾!", "ÐÐ°Ñ!")
+- HTML ÑÐµÐ³Ð¸. Ð¢Ð¾Ð»ÑÐºÐ¾ ÑÐ¸ÑÑÑÐ¹ ÑÐµÐºÑÑ.
+- ÐÑÐ´ÑÐ¼ÑÐ²Ð°ÑÑ ÑÐ°ÐºÑÑ Ð¸Ð»Ð¸ Ð´Ð¾Ð´ÑÐ¼ÑÐ²Ð°ÑÑ ÑÐ¾, ÑÐµÐ³Ð¾ Ð½ÐµÑ Ð² Ð½Ð¾Ð²Ð¾ÑÑÐ¸.
 
-{Контекст и суть: 2-4 предложения. Что случилось, почему это важно, цифры.}
+Ð¤ÐÐ ÐÐÐ¢ Ð´Ð»Ñ ÐÐÐÐÐÐ Ð½Ð¾Ð²Ð¾ÑÑÐ¸:
 
-{Мнение/вывод: 1-2 предложения — острое, честное, с позицией. Что это значит для рынка/бизнеса/пользователей.}
+{ÐÐ¸ÑÐ½ÑÐ¹ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº â Ð¿ÐµÑÐµÐ¾ÑÐ¼ÑÑÐ»ÐµÐ½Ð½ÑÐ¹, ÑÐµÐ¿Ð»ÑÑÑÐ¸Ð¹, Ð±ÐµÐ· ÑÐ¼Ð¾Ð´Ð·Ð¸}
+
+{ÐÐ¾Ð½ÑÐµÐºÑÑ Ð¸ ÑÑÑÑ: 2-4 Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ñ. Ð§ÑÐ¾ ÑÐ»ÑÑÐ¸Ð»Ð¾ÑÑ, Ð¿Ð¾ÑÐµÐ¼Ñ ÑÑÐ¾ Ð²Ð°Ð¶Ð½Ð¾, ÑÐ¸ÑÑÑ.}
+
+{ÐÐ½ÐµÐ½Ð¸Ðµ/Ð²ÑÐ²Ð¾Ð´: 1-2 Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ñ â Ð¾ÑÑÑÐ¾Ðµ, ÑÐµÑÑÐ½Ð¾Ðµ, Ñ Ð¿Ð¾Ð·Ð¸ÑÐ¸ÐµÐ¹. Ð§ÑÐ¾ ÑÑÐ¾ Ð·Ð½Ð°ÑÐ¸Ñ Ð´Ð»Ñ ÑÑÐ½ÐºÐ°/Ð±Ð¸Ð·Ð½ÐµÑÐ°/Ð¿Ð¾Ð»ÑÐ·Ð¾Ð²Ð°ÑÐµÐ»ÐµÐ¹.}
 
 [LINK]
 
 ---
 
-Правила:
-- Заголовок — НЕ перевод оригинала. Переосмысли, сформулируй остро.
-- Пиши по-русски, но английские термины оставляй как есть (API, open source, SaaS).
-- НЕ нумеруй новости.
-- Разделяй новости строкой --- между ними.
-- Пиши [LINK] отдельной строкой после каждой новости — я заменю на ссылку.
-- Разная глубина: где-то хватит 3 предложений, где-то новость заслуживает 5-6."""
+ÐÑÐ°Ð²Ð¸Ð»Ð°:
+- ÐÐ°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº â ÐÐ Ð¿ÐµÑÐµÐ²Ð¾Ð´ Ð¾ÑÐ¸Ð³Ð¸Ð½Ð°Ð»Ð°. ÐÐµÑÐµÐ¾ÑÐ¼ÑÑÐ»Ð¸, ÑÑÐ¾ÑÐ¼ÑÐ»Ð¸ÑÑÐ¹ Ð¾ÑÑÑÐ¾.
+- ÐÐ¸ÑÐ¸ Ð¿Ð¾-ÑÑÑÑÐºÐ¸, Ð½Ð¾ Ð°Ð½Ð³Ð»Ð¸Ð¹ÑÐºÐ¸Ðµ ÑÐµÑÐ¼Ð¸Ð½Ñ Ð¾ÑÑÐ°Ð²Ð»ÑÐ¹ ÐºÐ°Ðº ÐµÑÑÑ (API, open source, SaaS).
+- ÐÐ Ð½ÑÐ¼ÐµÑÑÐ¹ Ð½Ð¾Ð²Ð¾ÑÑÐ¸.
+- Ð Ð°Ð·Ð´ÐµÐ»ÑÐ¹ Ð½Ð¾Ð²Ð¾ÑÑÐ¸ ÑÑÑÐ¾ÐºÐ¾Ð¹ --- Ð¼ÐµÐ¶Ð´Ñ Ð½Ð¸Ð¼Ð¸.
+- ÐÐ¸ÑÐ¸ [LINK] Ð¾ÑÐ´ÐµÐ»ÑÐ½Ð¾Ð¹ ÑÑÑÐ¾ÐºÐ¾Ð¹ Ð¿Ð¾ÑÐ»Ðµ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð½Ð¾Ð²Ð¾ÑÑÐ¸ â Ñ Ð·Ð°Ð¼ÐµÐ½Ñ Ð½Ð° ÑÑÑÐ»ÐºÑ.
+- Ð Ð°Ð·Ð½Ð°Ñ Ð³Ð»ÑÐ±Ð¸Ð½Ð°: Ð³Ð´Ðµ-ÑÐ¾ ÑÐ²Ð°ÑÐ¸Ñ 3 Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ð¹, Ð³Ð´Ðµ-ÑÐ¾ Ð½Ð¾Ð²Ð¾ÑÑÑ Ð·Ð°ÑÐ»ÑÐ¶Ð¸Ð²Ð°ÐµÑ 5-6."""
 
 
 def escape_html(text):
@@ -76,6 +90,7 @@ def send_telegram_message(text, use_html=True):
             return True
         else:
             print(f"[{datetime.datetime.now()}] Error: {r.text}")
+            # Fallback: strip HTML and send as plain text
             if use_html:
                 print("Falling back to plain text...")
                 clean = re.sub(r'<[^>]+>', '', text)
@@ -118,7 +133,7 @@ def clean_old_history(history):
 
 def normalize_title(title):
     """Normalize title for duplicate comparison"""
-    return re.sub(r"[^a-zA-Za-zа-яёА-ЯЁ0-9]", "", title.lower())
+    return re.sub(r"[^a-zA-ZÐ°-ÑÑÐ-Ð¯Ð0-9]", "", title.lower())
 
 
 def is_duplicate(article, history):
@@ -179,7 +194,7 @@ def fetch_news():
     if skipped > 0:
         print(f"Skipped {skipped} duplicate(s) from past {HISTORY_DAYS} days")
 
-    return fresh[:10]
+    return fresh
 
 
 def rewrite_with_claude(articles):
@@ -196,11 +211,11 @@ def rewrite_with_claude(articles):
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=2500,
+            max_tokens=1500,
             system=SYSTEM_PROMPT,
             messages=[{
                 "role": "user",
-                "content": f"Вот {len(articles)} новостей. Перепиши каждую. Пиши [LINK] отдельной строкой после каждой новости.\n\n{titles_text}"
+                "content": f"ÐÐ¾Ñ {len(articles)} Ð½Ð¾Ð²Ð¾ÑÑÐµÐ¹. ÐÐµÑÐµÐ¿Ð¸ÑÐ¸ ÐºÐ°Ð¶Ð´ÑÑ. ÐÐ¸ÑÐ¸ [LINK] Ð¾ÑÐ´ÐµÐ»ÑÐ½Ð¾Ð¹ ÑÑÑÐ¾ÐºÐ¾Ð¹ Ð¿Ð¾ÑÐ»Ðµ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð½Ð¾Ð²Ð¾ÑÑÐ¸.\n\n{titles_text}"
             }]
         )
         result = message.content[0].text
@@ -221,35 +236,40 @@ def inject_links_html(rewritten_text, articles):
         stripped = line.strip()
         if "[LINK]" in stripped and article_idx < len(articles):
             url = articles[article_idx]["url"]
-            result.append(f'<a href="{url}">подробнее здесь</a>')
+            result.append(f'<a href="{url}">Ð¿Ð¾Ð´ÑÐ¾Ð±Ð½ÐµÐµ Ð·Ð´ÐµÑÑ</a>')
             article_idx += 1
         elif stripped == "---":
             result.append("")
-            result.append("━" * 15)
+            result.append("â" * 15)
             result.append("")
         else:
+            # Escape HTML in Claude's text to prevent parse errors
             result.append(escape_html(line))
 
+    # Add remaining links if Claude didn't add enough [LINK]
     while article_idx < len(articles):
         url = articles[article_idx]["url"]
-        result.append(f'<a href="{url}">подробнее здесь</a>')
+        result.append(f'<a href="{url}">Ð¿Ð¾Ð´ÑÐ¾Ð±Ð½ÐµÐµ Ð·Ð´ÐµÑÑ</a>')
         article_idx += 1
 
     return "\n".join(result)
 
 
-def split_message_by_separator(full_msg, separator="━" * 15, max_len=4096):
+def split_message_by_separator(full_msg, separator="â" * 15, max_len=4096):
     """Split a long message into parts at separator lines, respecting Telegram limit"""
     if len(full_msg) <= max_len:
         return [full_msg]
 
     parts = []
     current = ""
+    # Split by the separator line
     blocks = full_msg.split(separator)
 
     for i, block in enumerate(blocks):
+        # Add separator back (except before first block)
         candidate = current + (separator if current and i > 0 else "") + block
-        if len(candidate) > max_len and current:
+        if len(candidate) > max_len and cu2rent:
+            # Current part is full, save it
             parts.append(current.strip())
             current = block
         else:
@@ -261,33 +281,42 @@ def split_message_by_separator(full_msg, separator="━" * 15, max_len=4096):
     return parts if parts else [full_msg[:max_len]]
 
 
-def send_daily_digest():
-    print(f"\n[{datetime.datetime.now()}] Fetching news...")
-    articles = fetch_news()
+def send_daily_digest(slot="morning"):
+    """
+    Send digest for given time slot.
+    slot: "morning" (08:00), "evening" (16:00), "night" (19:00) â Astana time
+    """
+    slot_labels = {"morning": "08:00", "evening": "16:00", "night": "19:00"}
+    slot_label = slot_labels.get(slot, "08:00")
+    count = NEWS_PER_SLOT.get(slot, 4)
+
+    print(f"\n[{datetime.datetime.now()}] Fetching news for {slot_label} Astana digest ({count} items)...")
+    articles = fetch_news()[:count]
 
     if not articles:
-        send_telegram_message("Сегодня новостей не найдено.")
+        send_telegram_message("Ð¡Ð²ÐµÐ¶Ð¸Ñ Ð½Ð¾Ð²Ð¾ÑÑÐµÐ¹ Ð¿Ð¾ÐºÐ° Ð½ÐµÑ.")
         return
 
     today = datetime.date.today().strftime("%d.%m.%Y")
-    header = f"<b>AI &amp; Tech \u2014 Дайджест дня</b>\n{today}\n\n{'━' * 15}\n\n"
-    footer = f"\n{'━' * 15}\n<i>AI News Bot | Ежедневно в 08:00</i>"
+    header = f"<b>AI &amp; Tech â {today}, {slot_label}</b>\n\n{'â' * 15}\n\n"
+    footer = f"\n{'â' * 15}\n<i>AI News | 08:00, 16:00 Ð¸ 19:00 Ð¿Ð¾ ÐÑÑÐ°Ð½Ðµ</i>"
 
     rewritten = rewrite_with_claude(articles)
     if rewritten:
         body = inject_links_html(rewritten, articles)
         msg = header + body + footer
     else:
+        # Fallback without Claude
         lines = []
-        emojis = ["\U0001F525", "\u26A1", "\U0001F680", "\U0001F916", "\U0001F4A1",
-                  "\U0001F9E0", "\U0001F4CA", "\U0001F52C", "\U0001F4BB", "\U0001F310"]
+        emojis = ["ð¥", "â¡", "ð", "ð¤"]
         for i, a in enumerate(articles):
             emoji = emojis[i % len(emojis)]
             safe_title = escape_html(a["title"])
             source = f" ({escape_html(a['source'])})" if a.get("source") else ""
-            lines.append(f'{emoji} {safe_title}{source}\n<a href="{a["url"]}">подробнее здесь</a>')
+            lines.append(f'{emoji} {safe_title}{source}\n<a href="{a["url"]}">Ð¿Ð¾Ð´ÑÐ¾Ð±Ð½ÐµÐµ Ð·Ð´ÐµÑÑ</a>')
         msg = header + "\n\n".join(lines) + footer
 
+    # Split into multiple messages if too long
     parts = split_message_by_separator(msg)
     print(f"Sending {len(parts)} message(s)...")
     for i, part in enumerate(parts):
@@ -304,14 +333,26 @@ def send_daily_digest():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "test":
-        send_telegram_message("<b>AI News Bot подключён.</b>\nClaude API: " + ("да" if ANTHROPIC_API_KEY else "нет"))
+        send_telegram_message("<b>AI News Bot Ð¿Ð¾Ð´ÐºÐ»ÑÑÑÐ½.</b>\nClaude API: " + ("Ð´Ð°" if ANTHROPIC_API_KEY else "Ð½ÐµÑ"))
     elif len(sys.argv) > 1 and sys.argv[1] == "once":
-        send_daily_digest()
+        send_daily_digest("morning")
     else:
-        print(f"Bot started! Daily at {SEND_HOUR}")
+        print(f"Bot started!")
+        print(f"Morning digest : {SEND_HOUR_MORNING} UTC (08:00 Astana) â 4 Ð½Ð¾Ð²Ð¾ÑÑÐ¸")
+        print(f"Evening digest : {SEND_HOUR_EVENING} UTC (16:00 Astana) â 4 Ð½Ð¾Ð²Ð¾ÑÑÐ¸")
+        print(f"Night digest   : {SEND_HOUR_NIGHT}   UTC (19:00 Astana) â 2 Ð½Ð¾Ð²Ð¾ÑÑÐ¸")
         print(f"Claude API: {'enabled' if ANTHROPIC_API_KEY else 'disabled'}")
-        send_daily_digest()
-        schedule.every().day.at(SEND_HOUR).do(send_daily_digest)
+
+        # Send once on startup
+        send_daily_digest("morning")
+
+        # Schedule morning (08:00 Astana = 03:00 UTC)
+        schedule.every().day.at(SEND_HOUR_MORNING).do(send_daily_digest, slot="morning")
+        # Schedule evening (16:00 Astana = 11:00 UTC)
+        schedule.every().day.at(SEND_HOUR_EVENING).do(send_daily_digest, slot="evening")
+        # Schedule night (19:00 Astana = 14:00 UTC)
+        schedule.every().day.at(SEND_HOUR_NIGHT).do(send_daily_digest, slot="night")
+
         while True:
             schedule.run_pending()
             time.sleep(60)
